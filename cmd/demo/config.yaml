@@ -1,0 +1,10 @@
+server:
+  port: 8080
+  host: "localhost"
+
+app:
+  name: "demo-app"
+  debug: true
+
+log:
+  level: "debug"
