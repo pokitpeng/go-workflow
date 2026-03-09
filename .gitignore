@@ -31,3 +31,6 @@ bin/
 
 # Node
 **/node_modules/
+
+# Env
+**/*.env
