@@ -9,6 +9,9 @@ import (
 	"syscall"
 	"time"
 
+	"go-workflow/cmd/tg/biz"
+	"go-workflow/pkgs/llm/openai"
+	"go-workflow/pkgs/notify/feishu"
 	"go-workflow/pkgs/notify/telegram"
 
 	"github.com/joho/godotenv"
@@ -32,7 +35,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// 从环境变量读取配置
+	// 从环境变量读取 Telegram 配置
 	appID, _ := strconv.Atoi(os.Getenv("TG_APP_ID"))
 	appHash := os.Getenv("TG_APP_HASH")
 	phone := os.Getenv("TG_PHONE")
@@ -41,10 +44,47 @@ func main() {
 		sessionPath = "bin/session.json"
 	}
 
+	// 从环境变量读取 LLM 配置
+	llmBaseURL := os.Getenv("LLM_BASE_URL")
+	llmAPIKey := os.Getenv("LLM_API_KEY")
+	llmModel := os.Getenv("LLM_MODEL")
+	if llmModel == "" {
+		llmModel = "gpt-4o"
+	}
+
+	// 从环境变量读取飞书配置
+	feishuWebhook := os.Getenv("FEISHU_WEBHOOK")
+	feishuSecret := os.Getenv("FEISHU_SECRET")
+
+	// 从环境变量读取触发分数阈值
+	scoreTrigger := 8
+	if v := os.Getenv("SCORE_TRIGGER"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			scoreTrigger = n
+		}
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// 创建监听器
+	// 创建 LLM 客户端
+	llmClient := openai.NewClient(llmBaseURL, llmAPIKey)
+
+	// 创建飞书机器人
+	var feishuBot *feishu.FeishuBot
+	if feishuSecret != "" {
+		feishuBot = feishu.NewFeishuBot(feishuWebhook, feishu.WithSecret(feishuSecret))
+	} else {
+		feishuBot = feishu.NewFeishuBot(feishuWebhook)
+	}
+
+	// 创建分析器
+	analyzer := biz.NewAnalyzer(llmClient, feishuBot,
+		biz.WithModel(llmModel),
+		biz.WithScoreTrigger(scoreTrigger),
+	)
+
+	// 创建 Telegram 监听器
 	listener := telegram.NewListener(appID, appHash, phone,
 		telegram.WithSessionPath(sessionPath),
 		telegram.WithChannels(
@@ -58,21 +98,14 @@ func main() {
 	// 获取消息 channel
 	msgChan := listener.Messages()
 
-	// 启动消费者
-	go func() {
-		for msg := range msgChan {
-			slog.Info("收到频道消息",
-				"channel_id", msg.ChannelID,
-				"channel_name", msg.ChannelName,
-				"message_id", msg.MessageID,
-				"text", msg.Text,
-			)
-		}
-		slog.Info("消息 channel 已关闭")
-	}()
+	// 启动分析器
+	go analyzer.Run(ctx, msgChan)
 
 	// 运行监听器
-	slog.Info("启动 Telegram 监听器...")
+	slog.Info("启动 Telegram 监听器...",
+		"model", llmModel,
+		"score_trigger", scoreTrigger,
+	)
 	if err := listener.Run(ctx); err != nil {
 		slog.Error("监听器运行失败", "error", err)
 		os.Exit(1)
