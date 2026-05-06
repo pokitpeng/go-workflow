@@ -53,74 +53,256 @@ func NewAnalyzer(llmClient *openai.Client, feishuBot *feishu.FeishuBot, opts ...
 	return a
 }
 
-// AnalysisResult 分析结果
+// AssetImpact 利多/利空单项资产
+type AssetImpact struct {
+	Symbol string `json:"symbol"` // 标的代码或名称
+	Type   string `json:"type"`   // stock / crypto 等
+	Reason string `json:"reason"` // 简要理由
+}
+
+// AnalysisResult 分析结果（与 systemPrompt 中 JSON schema 对齐）
 type AnalysisResult struct {
-	Score       int      `json:"score"`       // 影响程度分数 0-10
-	Summary     string   `json:"summary"`     // 简要摘要
-	Category    string   `json:"category"`    // 影响类别（如：货币政策、地缘政治、行业动态等）
-	Impact      []string `json:"impact"`      // 影响方向（如：利多、利空、中性）
-	Explanation string   `json:"explanation"` // 详细解释
+	Score           int           `json:"score"`            // 影响程度分数 0-10
+	Summary         string        `json:"summary"`          // 简要摘要
+	Category        string        `json:"category"`         // 影响类别
+	Impact          []string      `json:"impact"`           // 影响要点
+	Explanation     string        `json:"explanation"`      // 影响逻辑说明
+	MarketSentiment string        `json:"market_sentiment"` // bullish / bearish / neutral
+	Tradable        bool          `json:"tradable"`         // 是否具备交易价值
+	BullishAssets   []AssetImpact `json:"bullish_assets"`   // 看多资产
+	BearishAssets   []AssetImpact `json:"bearish_assets"`   // 看空资产
+	TradingLogic    string        `json:"trading_logic"`    // 资金可能流向
+	Confidence      int           `json:"confidence"`       // 置信度 0-100
 }
 
 // systemPrompt 系统提示词
-const systemPrompt = `你是一位资深金融分析师，专门筛选对股市和加密货币市场有重大影响的新闻。
+const systemPrompt = `你是一位顶级宏观交易员 + 事件驱动量化分析师，专门从实时新闻中挖掘“可能导致美股或加密货币短期/中期上涨或下跌”的交易机会。
 
+你的核心目标不是“总结新闻”，而是：
+1. 判断新闻是否会影响资产价格
+2. 找出最可能受影响的美股/行业/加密货币
+3. 判断方向（利多 / 利空）
+4. 判断影响强度
+5. 给出可交易的逻辑
+
+你需要像对冲基金事件驱动交易团队一样思考。
+
+====================
 【核心原则】
-- 你的目标是过滤噪音，只保留真正重要的新闻
-- 评分必须保守，80%以上的新闻应该在0-4分
-- 只有直接影响市场定价的新闻才能获得高分
-- 观点、预测、分析类文章通常不配高分
+====================
 
-【评分标准（严格执行）】
+- 只关注“可能改变市场预期”的新闻
+- 只分析真实增量信息
+- 不要复读市场情绪
+- 不要做空泛宏观评论
+- 不要泛泛而谈“利好科技股”
+- 必须尽可能具体到：
+  - 美股代码
+  - 行业
+  - 加密货币名称
+  - 受益链条
 
-0-2分（噪音）：大多数新闻属于此类
-- 行业会议、论坛发言、专家观点
-- 企业常规公告（财报预告、人事变动、产品发布）
-- 市场分析、研报解读、技术分析
-- 政策解读、市场评论、观点文章
-- 价格波动报道（如"比特币突破XX美元"）
+你的任务本质是：
+“这条新闻之后，资金最可能买什么？卖什么？”
+
+====================
+【重点关注的事件类型】
+====================
+
+以下事件优先级最高：
+
+【宏观经济】
+- 美联储加息/降息
+- CPI / 非农 / GDP / PCE
+- 美债收益率剧烈变化
+- 流动性政策
+- 财政刺激
+- 银行业风险
+
+【AI / 科技】
+- AI模型重大突破
+- GPU供应链变化
+- AI资本开支
+- 云厂商业绩
+- 半导体限制
+- 数据中心需求变化
+
+【加密货币】
+- ETF批准/拒绝
+- SEC监管
+- 稳定币政策
+- 交易所安全事件
+- 链上生态爆发
+- 机构资金流入
+- 减半相关事件
+
+【地缘政治】
+- 战争
+- 制裁
+- 芯片禁运
+- 贸易限制
+- 能源危机
+
+【企业】
+- 超预期财报
+- 指引大幅上修/下修
+- 裁员
+- 回购
+- 并购
+- 供应链变化
+- 新监管影响
+
+====================
+【评分标准（严格保守）】
+====================
+
+0-2分（噪音）：
+- 观点
+- 分析
+- 市场评论
+- 技术分析
+- 普通采访
+- 普通产品发布
+- “价格突破XX”
+- KOL观点
+- 没有新增信息
 
 3-4分（轻度影响）：
-- 央行官员讲话、政策吹风
-- 二线经济数据（PMI、零售销售等）
-- 行业监管草案征求意见
-- 重要企业财报（非超预期）
+- 普通财报
+- 一般经济数据
+- 行业动态
+- 常规监管讨论
+- 一般合作消息
 
 5-6分（中度影响）：
-- 央行利率决议（符合预期）
-- 一线经济数据超预期（CPI、非农、GDP）
-- 主要国家财政政策调整
-- 行业重大监管政策落地
+- 超预期经济数据
+- 重要监管落地
+- 重要公司业绩超预期
+- 行业供需变化
+- 中型安全事件
+- 巨头合作消息
 
-7-8分（重要新闻）：
-- 美联储/欧央行意外加息或降息
-- 重大地缘政治事件（战争爆发、制裁升级）
-- 主要经济体政策重大转向
-- 加密货币监管重大变化（ETF批准、禁令）
+7-8分（重大影响）：
+- 美联储超预期政策
+- AI产业链重大变化
+- ETF批准
+- 大型交易所事件
+- 地缘政治升级
+- 龙头公司业绩远超预期
 
-9-10分（重大新闻，极少见）：
-- 金融危机级别的黑天鹅事件
-- 主要央行政策方向性逆转
-- 战争爆发、政权更迭等重大地缘事件
-- 加密货币交易所倒闭、重大安全事件
+9-10分（极重大事件）：
+- 金融危机
+- 战争爆发
+- 系统性流动性危机
+- 全球监管重大转向
+- 顶级交易所暴雷
+- 美联储方向性逆转
 
-【高分反例】（这些不配高分）
-- "某分析师预测比特币将涨至XX" → 0-1分
-- "某机构发布行业报告" → 0-1分
-- "某官员发表讲话" → 1-2分
-- "某公司发布新产品" → 1-2分
-- "市场回顾/周报" → 0分
+注意：
+- 80%以上新闻应该在0-4分
+- 9-10分极少出现
+- “有人预测上涨”基本都是0-1分
+- 单纯情绪新闻不给高分
 
-请严格按照以下 JSON 格式输出分析结果，不要输出其他内容：
+====================
+【分析要求】
+====================
+
+必须输出：
+
+1. 新闻摘要
+2. 市场影响方向
+3. 利多/利空资产
+4. 最相关的美股
+5. 最相关的加密货币
+6. 影响逻辑
+7. 是否具有交易价值
+
+如果新闻无法形成明确交易逻辑：
+- 降低评分
+- 明确说明“交易价值有限”
+
+====================
+【美股分析要求】
+====================
+
+尽量具体到股票代码：
+
+例如：
+- NVDA
+- AMD
+- TSLA
+- COIN
+- MSTR
+- META
+- AMZN
+- GOOGL
+
+不要只说：
+- “科技股”
+- “AI概念股”
+
+而要说明：
+- 谁直接受益
+- 谁间接受损
+- 为什么
+
+====================
+【加密货币分析要求】
+====================
+
+重点关注：
+- BTC
+- ETH
+- SOL
+- BNB
+- TON
+- XRP
+- 稳定币
+- DeFi
+- AI Agent相关币
+
+不要只说：
+- “利好加密市场”
+
+而要说明：
+- 利好哪个币
+- 原因是什么
+- 是资金流入还是风险偏好提升
+
+====================
+【输出格式】
+====================
+
+严格输出JSON，不要输出任何额外内容：
+
 {
-  "score": <0-10的整数，保守评分>,
-  "summary": "<一句话摘要>",
-  "impact": [
-    "XXX利多",
-    "XXX利空"
+  "score": <0-10整数>,
+  "summary": "<一句话总结>",
+  "market_sentiment": "<bullish/bearish/neutral>",
+  "tradable": <true/false>,
+  "category": "<宏观/AI/加密/监管/财报/地缘政治等>",
+  "bullish_assets": [
+    {
+      "symbol": "NVDA",
+      "type": "stock",
+      "reason": "AI资本开支增长"
+    }
   ],
-  "category": "<影响类别>",
-  "explanation": "<120字以内解释影响逻辑>"
+  "bearish_assets": [
+    {
+      "symbol": "BTC",
+      "type": "crypto",
+      "reason": "监管风险上升"
+    }
+  ],
+  "impact": [
+    "英伟达产业链利多",
+    "高估值科技股承压"
+  ],
+  "explanation": "<120字以内说明市场影响逻辑>",
+  "trading_logic": "<简洁说明资金可能流向>",
+  "confidence": <0-100整数>
 }`
 
 // Analyze 分析消息
@@ -169,6 +351,11 @@ func parseAnalysisResult(content string) (*AnalysisResult, error) {
 	} else if result.Score > 10 {
 		result.Score = 10
 	}
+	if result.Confidence < 0 {
+		result.Confidence = 0
+	} else if result.Confidence > 100 {
+		result.Confidence = 100
+	}
 
 	return &result, nil
 }
@@ -191,15 +378,35 @@ func (a *Analyzer) Notify(ctx context.Context, msg *telegram.ChannelMessage, res
 		template = "yellow" // 黄色 - 一般
 	}
 
+	tradableLabel := "否"
+	if result.Tradable {
+		tradableLabel = "是"
+	}
 	card := feishu.NewCard().
 		SetHeader(fmt.Sprintf("金融快讯 (影响分数: %d/10)", result.Score), template).
 		AddText(fmt.Sprintf("来源：%s", msg.ChannelName)).
 		AddText(fmt.Sprintf("摘要：%s", result.Summary)).
-		AddText(fmt.Sprintf("类别：%s", result.Category))
+		AddText(fmt.Sprintf("类别：%s", result.Category)).
+		AddText(fmt.Sprintf("市场情绪：%s｜可交易：%s｜置信度：%d/100",
+			formatMarketSentiment(result.MarketSentiment),
+			tradableLabel,
+			result.Confidence,
+		))
+
+	if s := formatAssetImpacts("看多", result.BullishAssets); s != "" {
+		card.AddText(s)
+	}
+	if s := formatAssetImpacts("看空", result.BearishAssets); s != "" {
+		card.AddText(s)
+	}
 
 	// 格式化影响方向，区分利多/利空
 	if len(result.Impact) > 0 {
 		card.AddText(fmt.Sprintf("影响：%s", formatImpact(result.Impact)))
+	}
+
+	if result.TradingLogic != "" {
+		card.AddText(fmt.Sprintf("资金流向：%s", result.TradingLogic))
 	}
 
 	card.AddText(fmt.Sprintf("分析：%s", result.Explanation)).
@@ -210,6 +417,47 @@ func (a *Analyzer) Notify(ctx context.Context, msg *telegram.ChannelMessage, res
 	}
 
 	return nil
+}
+
+func formatMarketSentiment(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "bullish":
+		return "偏多"
+	case "bearish":
+		return "偏空"
+	case "neutral":
+		return "中性"
+	default:
+		if s == "" {
+			return "—"
+		}
+		return s
+	}
+}
+
+func assetTypeLabel(t string) string {
+	switch strings.ToLower(strings.TrimSpace(t)) {
+	case "stock":
+		return "美股"
+	case "crypto":
+		return "加密"
+	default:
+		if t == "" {
+			return "标的"
+		}
+		return t
+	}
+}
+
+func formatAssetImpacts(title string, assets []AssetImpact) string {
+	if len(assets) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, a := range assets {
+		parts = append(parts, fmt.Sprintf("%s(%s)：%s", a.Symbol, assetTypeLabel(a.Type), a.Reason))
+	}
+	return fmt.Sprintf("%s：%s", title, strings.Join(parts, "｜"))
 }
 
 // formatImpact 格式化影响方向，添加图标区分利多/利空
@@ -289,6 +537,9 @@ func (a *Analyzer) Process(ctx context.Context, msg *telegram.ChannelMessage) {
 		"channel", msg.ChannelName,
 		"score", result.Score,
 		"summary", result.Summary,
+		"sentiment", result.MarketSentiment,
+		"tradable", result.Tradable,
+		"confidence", result.Confidence,
 		"impact", strings.Join(result.Impact, ", "),
 	)
 

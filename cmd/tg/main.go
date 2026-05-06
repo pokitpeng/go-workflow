@@ -57,7 +57,7 @@ func main() {
 	feishuSecret := os.Getenv("FEISHU_SECRET")
 
 	// 从环境变量读取触发分数阈值
-	scoreTrigger := 8
+	scoreTrigger := 5
 	if v := os.Getenv("SCORE_TRIGGER"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			scoreTrigger = n
@@ -89,9 +89,9 @@ func main() {
 		telegram.WithSessionPath(sessionPath),
 		telegram.WithChannels(
 			1693268862, // 金十数据
-			1549184965, // 金色财经
-			1668307169, // 币圈新闻即时快讯
-			1387109317, // Blockbeats
+			// 1549184965, // 金色财经
+			// 1668307169, // 币圈新闻即时快讯
+			// 1387109317, // Blockbeats
 		),
 	)
 
